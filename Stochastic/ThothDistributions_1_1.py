@@ -9,7 +9,7 @@ TODO future: group into the following types
     - X∼Bernoulli(p)    ! DONE
     - X∼Binomial(n,p)
     - X∼Geometric(p)
-    - X∼Poisson(λ)
+    - X∼Poisson(λ)      ! DONE
 - Continuous random variables
     - X∼Uniform(a,b)    ! DONE
     - X∼Exponential(λ)  ! DONE
@@ -17,11 +17,12 @@ TODO future: group into the following types
     - X∼K-Erlang(λ)     ! DONE
     - X∼SymTriange(a,b) ! DONE
     - X∼Ramp(a,off)     ! DONE
+    - X∼WeibullDistribution(λ,α)     ! DONE
 """
 
 
 # local file
-import rngStream
+import rngStream_n
 import numpy as np
 
 class Distribution:
@@ -58,6 +59,30 @@ class BernoulliDistribution(Distribution):
     def X(self):
         return 1 if self.unigen.X() < self.p else 0
     
+class PoissonDistribution(Distribution):
+    """
+    Returns a number of events happening in a fixed time interval 
+    (each event has Exp. distr. with rate λ)
+    X ∈ {0,1,2,...}
+    """
+    def __init__(self, lam):
+        self.lam = lam
+        self.unigen = UniformDistribution()  
+    
+    def __str__(self):
+        return "X∼Poisson({})".format(self.lam)
+        
+    def X(self):
+        #TODO: Implement more efficient method
+        #knuth' method:
+        L = np.e ** -self.lam
+        k = 0
+        p = self.unigen.X()
+        while p > L:
+            k +=1
+            p *= self.unigen.X()
+        return k
+    
 
 #------------------------------------------------------------------------------------------------------ 
         
@@ -70,25 +95,55 @@ class BernoulliDistribution(Distribution):
 
 
 
-
-
-
 class UniformDistribution(Distribution):
-    def __init__(self, name="UniGenDist01", lower=0.0, upper=1.0):
+    def __init__(self, name="UniGenDist01", lower=0.0, upper=1.0, cache_size=10000):
         self.range = upper - lower
         self.upper = upper
         self.lower = lower
-        self.unigen = rngStream.RngStream(name)
+        self.unigen = rngStream_n.RngStream(name)
+        self.cache_size = cache_size
+        self.reload_cache()
+    
+    def reload_cache(self):
+        self.cache = (np.array(self.unigen.nRandU01(self.cache_size)) * self.range)+ self.lower
+        self.i = 0
     
     def __str__(self):
         return "X~U({},{})".format(self.lower, self.upper)
         
-    def get_random_U01(self):
-        return self.unigen.RandU01()
- 
+    def Xn(self, n):
+        return (np.array(self.unigen.nRandU01(self.cache_size)) * self.range)+ self.lower
+        
     def X(self):
-        u = (self.unigen.RandU01() * self.range) + self.lower
+        u = self.cache[self.i] 
+        self.i += 1
+        if self.i == self.cache_size:
+            self.reload_cache()
         return u
+    
+class LogUniformDistribution(Distribution):
+    def __init__(self, name="LogUniGenDist01", cache_size=10000):
+        self.unigen = rngStream_n.RngStream(name)
+        self.cache_size = cache_size
+        self.reload_cache()
+    
+    def reload_cache(self):
+        self.cache = np.log(self.unigen.nRandU01(self.cache_size))
+        self.i = 0
+    
+    def __str__(self):
+        return "X~LogU(0,1)".format()
+        
+    def Xn(self, n):
+        return np.log(self.unigen.nRandU01(self.cache_size)) 
+        
+    def X(self):
+        logu = self.cache[self.i] 
+        self.i += 1
+        if self.i == self.cache_size:
+            self.reload_cache()
+        return logu
+    
 
 class NormalDistribution(Distribution):
     def __init__(self,mean=0, var=1):
@@ -96,7 +151,8 @@ class NormalDistribution(Distribution):
         self.var = var
         self.std = var**0.5
         self.mean = mean
-        self.unigen = UniformDistribution()        
+        self.unigen = UniformDistribution() 
+        self.logunigen = LogUniformDistribution()        
         
     def __str__(self):
         return "X~N({},{})".format(self.mean, self.var)
@@ -107,10 +163,10 @@ class NormalDistribution(Distribution):
         return self.random_values.pop()
 
     def __generate_new_random_variables(self):
-        U_1 = self.unigen.X()
+        log_U_1 = self.logunigen.X()
         U_2 = self.unigen.X()
-        X_1 = (-2 * np.log(U_1))**0.5 * np.cos(2 * np.pi * U_2)
-        X_2 = (-2 * np.log(U_1))**0.5 * np.sin(2 * np.pi * U_2)
+        X_1 = (-2 * log_U_1)**0.5 * np.cos(2 * np.pi * U_2)
+        X_2 = (-2 * log_U_1)**0.5 * np.sin(2 * np.pi * U_2)
         # scale
         X_1 *= self.std 
         X_2 *= self.std
@@ -126,13 +182,13 @@ class ExponentialDistribution(Distribution):
     def __init__(self,lam):
         self.lam = lam
         self.lam_inv = 1/lam
-        self.unigen = UniformDistribution()        
+        self.logunigen = LogUniformDistribution()        
         
     def __str__(self):
         return "X~Exp({})".format(self.lam)
 
     def X(self):
-       return -self.lam_inv * np.log(self.unigen.X())
+       return -self.lam_inv * self.logunigen.X()
 
 
 class KErlangDistribution(Distribution):
@@ -199,13 +255,24 @@ class RampDistribution(Distribution):
        return self.offset + (self.unigen.X() ** 0.5) * self.a
    
     
+class WeibullDistribution(Distribution):
+    """
+        λ = scale parameter
+        α = shape parameter
+    """
+    def __init__(self,lam, alpha):
+        self.alpha = alpha
+        self.lam = lam
+        self.altha_root = 1/self.alpha
+        self.logunigen = LogUniformDistribution()        
+        
+    def __str__(self):
+        return "X~Weibull(λ={}, α={})".format(self.lam, self.alpha)
     
+    def X(self):
+       return np.power(- self.logunigen.X() , self.altha_root) / self.lam
     
-    
-    
-    
-    
-    
+
 #------------------------------------------------------------------------------------------------------ 
         
 #------------------------------------   Playgroud ----------------------------------------------------- 
